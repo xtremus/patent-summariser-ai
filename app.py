@@ -3,6 +3,8 @@ import os
 import hashlib
 import tempfile
 import time
+import requests
+from typing import List
 
 # --- PAGE CONFIG MUST BE THE VERY FIRST COMMAND ---
 st.set_page_config(page_title="Patent Summariser", page_icon="🔭", layout="wide")
@@ -169,11 +171,56 @@ def main():
         st.warning("Please provide a Groq API key in the sidebar to proceed.")
         st.stop()
 
-    uploaded_file = st.file_uploader("Upload a patent (PDF)", type=["pdf"])
+    # --- FILE INPUT LOGIC ---
+    input_method = st.radio(
+        "Choose Input Method:", ("Upload Local PDF", "Paste PDF URL"), horizontal=True
+    )
 
-    if uploaded_file:
-        file_bytes = uploaded_file.getvalue()
-        file_name = uploaded_file.name
+    file_bytes = None
+    file_name = None
+
+    if input_method == "Upload Local PDF":
+        uploaded_file = st.file_uploader("Upload a patent (PDF)", type=["pdf"])
+        if uploaded_file:
+            file_bytes = uploaded_file.getvalue()
+            file_name = uploaded_file.name
+
+            # Clear URL state if the user switched back to uploading
+            if "url_file_bytes" in st.session_state:
+                del st.session_state["url_file_bytes"]
+                del st.session_state["url_file_name"]
+
+    else:
+        pdf_url = st.text_input("Enter direct PDF URL:")
+        if pdf_url:
+            if st.button("Fetch PDF"):
+                with st.spinner("Downloading PDF from URL..."):
+                    try:
+                        # Adding a user-agent to bypass basic anti-bot blockers
+                        headers = {"User-Agent": "Mozilla/5.0"}
+                        response = requests.get(pdf_url, headers=headers, timeout=15)
+                        response.raise_for_status()
+
+                        # Store in session state so it survives the app rerunning
+                        st.session_state.url_file_bytes = response.content
+                        extracted_name = pdf_url.split("/")[-1]
+                        st.session_state.url_file_name = (
+                            extracted_name
+                            if extracted_name.endswith(".pdf")
+                            else "downloaded_patent.pdf"
+                        )
+
+                    except Exception as e:
+                        st.error(f"Failed to fetch PDF: {e}")
+
+        # Load from session state if it was previously fetched
+        if "url_file_bytes" in st.session_state:
+            file_bytes = st.session_state.url_file_bytes
+            file_name = st.session_state.url_file_name
+            st.success(f"Successfully loaded: {file_name}")
+
+    # --- RAG PIPELINE TRIGGER ---
+    if file_bytes and file_name:
         file_hash = get_file_hash(file_bytes)
 
         if (
@@ -190,7 +237,8 @@ def main():
                 vector_store, page_count, word_count, first_page_text = (
                     get_vector_store(file_hash, file_bytes, file_name)
                 )
-                st.success(f"File indexed: {file_name}")
+                if input_method == "Upload Local PDF":
+                    st.success(f"File indexed: {file_name}")
                 st.info(f"Stats Overview: {page_count} pages | ~{word_count} words")
             except Exception as e:
                 st.error(f"Error processing file: {str(e)}")

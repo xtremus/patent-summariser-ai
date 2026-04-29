@@ -40,5 +40,5 @@ You will need two free API keys to run this application:
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/yourusername/innovasearch-ai.git](https://github.com/yourusername/innovasearch-ai.git)
-   cd innovasearch-ai
+   git clone [https://github.com/xtremus/patent-summariser-ai/]
+   cd patent-summariser-ai

@@ -1,30 +1,13 @@
-# requirements.txt
-# streamlit>=1.35.0
-# langchain>=0.2.0
-# langchain-google-genai>=1.0.0
-# langchain-groq>=0.1.0
-# langchain-community>=0.2.0
-# faiss-cpu>=1.8.0
-# pypdf>=4.0.0
-# python-dotenv>=1.0.0
-
 import streamlit as st
 import os
 import hashlib
 import tempfile
 import time
-from typing import List
 
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_groq import ChatGroq
-from langchain_community.vectorstores import FAISS
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_core.prompts import ChatPromptTemplate
+# --- PAGE CONFIG MUST BE THE VERY FIRST COMMAND ---
+st.set_page_config(page_title="Patent Summariser", page_icon="🔭", layout="wide")
 
-st.set_page_config(
-    page_title="Patent Summariser (Groq Powered)", page_icon="⚡", layout="wide"
-)
+# --- HELPER FUNCTIONS ---
 
 
 def get_file_hash(file_bytes: bytes) -> str:
@@ -32,9 +15,6 @@ def get_file_hash(file_bytes: bytes) -> str:
 
 
 def invoke_with_retry(chain, inputs: dict, max_retries: int = 3):
-    """
-    Standard retry wrapper for network stability.
-    """
     for attempt in range(max_retries):
         try:
             return chain.invoke(inputs)
@@ -46,10 +26,18 @@ def invoke_with_retry(chain, inputs: dict, max_retries: int = 3):
                 raise e
 
 
+# --- CORE RAG LOGIC ---
+
+
 @st.cache_resource(show_spinner=False)
-def get_vector_store(
-    file_hash: str, _file_bytes: bytes, file_name: str, _google_api_key: str
-):
+def get_vector_store(file_hash: str, _file_bytes: bytes, file_name: str):
+    # ⚡ LAZY IMPORTS: These heavy libraries only load when a file is uploaded,
+    # preventing the app from hanging on a blank screen during startup.
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_community.vectorstores import FAISS
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from langchain_community.document_loaders import PyPDFLoader, TextLoader
+
     suffix = ".pdf" if file_name.lower().endswith(".pdf") else ".txt"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
         tmp_file.write(_file_bytes)
@@ -69,10 +57,8 @@ def get_vector_store(
         )
         chunks = text_splitter.split_documents(documents)
 
-        # We keep Google for Embeddings (Free tier limits are very high for embeddings)
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/gemini-embedding-001", google_api_key=_google_api_key
-        )
+        # ⚡ Local HuggingFace embeddings
+        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
         vector_store = FAISS.from_documents(chunks, embeddings)
 
@@ -86,7 +72,10 @@ def get_vector_store(
 
 
 def extract_metadata(first_page_text: str, groq_api_key: str) -> str:
-    # Swapped to Groq's current supported Llama 3.3 model
+    # ⚡ LAZY IMPORTS
+    from langchain_groq import ChatGroq
+    from langchain_core.prompts import ChatPromptTemplate
+
     llm = ChatGroq(
         temperature=0.1, model_name="llama-3.3-70b-versatile", groq_api_key=groq_api_key
     )
@@ -119,7 +108,10 @@ def extract_metadata(first_page_text: str, groq_api_key: str) -> str:
 def generate_section(
     query: str, vector_store, groq_api_key: str, section_name: str
 ) -> str:
-    # Swapped to Groq's current supported Llama 3.3 model
+    # ⚡ LAZY IMPORTS
+    from langchain_groq import ChatGroq
+    from langchain_core.prompts import ChatPromptTemplate
+
     llm = ChatGroq(
         temperature=0.2, model_name="llama-3.3-70b-versatile", groq_api_key=groq_api_key
     )
@@ -158,32 +150,14 @@ def main():
 
     st.sidebar.header("API Configuration")
 
-    # Dual API Keys input
-    google_api_key_input = st.sidebar.text_input(
-        "1. Google API Key (For Embeddings)",
-        type="password",
-        help="Used to process and index the PDF.",
-    )
-
     groq_api_key_input = st.sidebar.text_input(
-        "2. Groq API Key (For Generation)",
+        "Groq API Key",
         type="password",
-        help="Used to generate the summaries at lightning speed.",
+        help="Get this free at console.groq.com. Used to generate the summaries.",
     )
 
-    # Bulletproof fallback to check environment variables first
-    env_google_key = os.getenv("GOOGLE_API_KEY")
     env_groq_key = os.getenv("GROQ_API_KEY")
 
-    # Final Google key resolution ignoring missing secrets file
-    google_secrets_key = None
-    try:
-        google_secrets_key = st.secrets["GOOGLE_API_KEY"]
-    except Exception:
-        pass
-    google_api_key = google_api_key_input or env_google_key or google_secrets_key
-
-    # Final Groq key resolution ignoring missing secrets file
     groq_secrets_key = None
     try:
         groq_secrets_key = st.secrets["GROQ_API_KEY"]
@@ -191,13 +165,11 @@ def main():
         pass
     groq_api_key = groq_api_key_input or env_groq_key or groq_secrets_key
 
-    if not google_api_key or not groq_api_key:
-        st.warning("⚠️ Please provide BOTH API keys in the sidebar to proceed.")
+    if not groq_api_key:
+        st.warning("Please provide a Groq API key in the sidebar to proceed.")
         st.stop()
 
-    uploaded_file = st.file_uploader(
-        "Upload a patent (PDF or TXT)", type=["pdf", "txt"]
-    )
+    uploaded_file = st.file_uploader("Upload a patent (PDF)", type=["pdf"])
 
     if uploaded_file:
         file_bytes = uploaded_file.getvalue()
@@ -213,10 +185,10 @@ def main():
             st.session_state.full_summary_text = None
             st.session_state.last_file_hash = file_hash
 
-        with st.spinner("Indexing document (Google Embeddings)..."):
+        with st.spinner("Indexing document..."):
             try:
                 vector_store, page_count, word_count, first_page_text = (
-                    get_vector_store(file_hash, file_bytes, file_name, google_api_key)
+                    get_vector_store(file_hash, file_bytes, file_name)
                 )
                 st.success(f"File indexed: {file_name}")
                 st.info(f"Stats Overview: {page_count} pages | ~{word_count} words")
@@ -251,7 +223,7 @@ def main():
             ),
         ]
 
-        if st.button("Generate Fast Summary", type="primary"):
+        if st.button("Generate Summary", type="primary"):
             total_steps = len(sections_config) + 1
             progress_bar = st.progress(0)
 
